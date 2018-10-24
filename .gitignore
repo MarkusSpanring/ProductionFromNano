@@ -10,3 +10,8 @@ build
 *.pcm
 FrameworkJobReport.xml
 HTT*root
+rundir_*
+samples
+out
+proxy
+kerberos

@@ -4,117 +4,124 @@ import os
 import sys
 import threading
 
-from ROOT import gSystem, TChain, TSystem, TFile, TString, vector
+from ROOT import gSystem, TChain, TSystem, TFile, TString, vector, TFileCollection, edm
 
-from PSet import process
+# from PSet import process
+import FWCore.PythonUtilities.LumiList as LumiList
+import FWCore.ParameterSet.Config as cms
+import json
+from glob import glob
 
-#dir = "/data/higgs/nanonaod_2016/PUMoriond17_05Feb2018_94X_mcRun2_asymptotic_v2-v1/VBFHToTauTau_M125_13TeV_powheg_pythia8/"
-channel = sys.argv[1]
-fileNames = [ sys.argv[2] ]
+def getLumisToRun(JSON):
+    if JSON == "": return vector( 'edm::LuminosityBlockRange' )()
 
-#sync_event=850381
-sync_event=0
-#doSvFit = True
-doSvFit = False
-applyRecoil=True
-#applyRecoil=False
-nevents=-1      #all
-#nevents=5000
-vlumis = vector('string')()
-nthreads = 6
+    vlumis = vector( 'edm::LuminosityBlockRange' )()
+    myList = LumiList.LumiList (filename = "/".join(["utils/cert_data",JSONfile]) ).getCMSSWString().split(',')
+    lumisToProcess = cms.untracked.VLuminosityBlockRange( myList )
 
-print 'Channel: ',channel
 
-if doSvFit :
-    print "Run with SVFit computation"
-if applyRecoil :
-    print "Apply MET recoil corrections"
+    for BlockRange in lumisToProcess:
+        Block = BlockRange.split('-')
+
+        startRun =       int(Block[0].split(':')[0])
+        startLumiBlock = int(Block[0].split(':')[1])
+
+        if len(Block) > 1:
+            endRun =       int(Block[1].split(':')[0])
+            endLumiBlock = int(Block[1].split(':')[1])
+        else:
+            endRun = startRun
+            endLumiBlock = endLumiBlock
+
+        vlumis.push_back( edm.LuminosityBlockRange( edm.LuminosityBlockID(startRun, startLumiBlock),
+                                                    edm.LuminosityBlockID(endRun, endLumiBlock) ) )
+    return vlumis
+#######################################################################################################
+
+with open("configBall.json","r") as FSO:
+    configBall = json.load(FSO)
+
+aFile =            configBall["file"]
+channel =          str(configBall["channel"])
+systShift =        str(configBall["systShift"])
+JSONfile =         str(configBall["certJson"])
+nevents =          int(configBall["nevents"])
+check_event =      int(configBall["check_event"])
+
+print "-"*30
+for i,k in configBall.items():
+    if i == "file": continue
+    print i+" "*(15 - len(i)),k
+print "-"*30
+
+if not "root://" in aFile: aFile = "file://" + aFile
+
+
+print "Using file: ",aFile
+if str( configBall["system"] ) == "lxbatch" or str( configBall["system"] ) == "condor":
+    os.system("xrdcp {0} {1}".format(aFile, aFile.split("/")[-1] ) )
+    aFile = aFile.split("/")[-1]
+
+aROOTFile = TFile.Open(aFile)
+aTree = aROOTFile.Get("Events")
+
+if check_event > 0:
+    aTree = aTree.CopyTree("event == {0}".format(check_event) )
+
+entries = aTree.GetEntries()
+
+if not entries:
+    print "file is empty. Aborting"
+    exit(0)
+else:
+    print "TTree entries: ", entries
+
+
+print "Compiling...."
 
 #Some system have problem runnig compilation (missing glibc-static library?).
 #First we try to compile, and only then we start time consuming cmssw
-status = 1
-gSystem.CompileMacro('HTTEvent.cxx','k')
-status *= gSystem.CompileMacro('syncDATA.C','k')
+
+
+assert gSystem.CompileMacro('HTTEvent.cxx','k')
+assert gSystem.CompileMacro('utils/TauTriggerSFs2017/src/TauTriggerSFs2017.cc','k')
+assert gSystem.CompileMacro('HTXSClassification.cc','k')
+assert gSystem.CompileMacro('EventWriter.C','k')
 #status *= gSystem.CompileMacro('NanoEventsSkeleton.C') #RECOMPILE IF IT CHANGES!
-status *= gSystem.CompileMacro('NanoEventsSkeleton.C','k')
+assert gSystem.CompileMacro('NanoEventsSkeleton.C','k')
+
 gSystem.Load('$CMSSW_BASE/lib/$SCRAM_ARCH/libTauAnalysisClassicSVfit.so')
 gSystem.Load('$CMSSW_BASE/lib/$SCRAM_ARCH/libTauAnalysisSVfitTF.so')
 gSystem.Load('$CMSSW_BASE/lib/$SCRAM_ARCH/libHTT-utilitiesRecoilCorrections.so')
 
-# xline=gSystem.GetMakeSharedLib()+' -Wattributes'
-# xline=xline.replace(' -W ',' -W -Wattributes ')
-# gSystem.SetMakeSharedLib(xline)
-# print 'MMM ',gSystem.GetMakeSharedLib()
+assert gSystem.CompileMacro('HTauTauTreeFromNanoBase.C','k')
+from ROOT import HTTParticle, HTTAnalysis
 
-# yline=gSystem.GetMakeExe()+' -Wattributes'
-# yline=yline.replace(' -W ',' -W -Wattributes ')
-# gSystem.SetMakeExe(yline)
-# print 'NNN ',gSystem.GetMakeExe()
+if channel=='mt':
+    assert gSystem.CompileMacro('HMuTauhTreeFromNano.C','k')
+    from ROOT import HMuTauhTreeFromNano as Ntuplizer
 
-stdout = sys.stdout
-sys.stdout = open('/tmp/pstd', 'w')
-stderr = sys.stderr
-sys.stderr = open('/tmp/perr', 'w')
-status *= gSystem.CompileMacro('HTauTauTreeFromNanoBase.C','k')
-if channel=='mt' or channel=='all': status *= gSystem.CompileMacro('HMuTauhTreeFromNano.C','k')
-if channel=='et' or channel=='all': status *= gSystem.CompileMacro('HElTauhTreeFromNano.C','k')
-if channel=='tt' or channel=='all': status *= gSystem.CompileMacro('HTauhTauhTreeFromNano.C','k')
-sys.stdout=stdout
-sys.stderr=stderr
+if channel=='et':
+    assert gSystem.CompileMacro('HElTauhTreeFromNano.C','k')
+    from ROOT import HElTauhTreeFromNano as Ntuplizer
 
-print "Compilation status: ",status
-if status==0:
-    exit(-1)
-
-if channel=='mt' or channel=='all': from ROOT import HMuTauhTreeFromNano
-if channel=='et' or channel=='all': from ROOT import HElTauhTreeFromNano
-if channel=='tt' or channel=='all': from ROOT import HTauhTauhTreeFromNano
-
-lumisToProcess = process.source.lumisToProcess
-#import FWCore.ParameterSet.Config as cms
-#lumisToProcess = cms.untracked.VLuminosityBlockRange( ("1:2047-1:2047", "1:2048-1:2048", "1:6145-1:6145", "1:4098-1:4098", "1:3-1:7", "1:6152-1:6152", "1:9-1:11", "1:273-1:273", "1:4109-1:4109", "1:4112-1:4112", "1:4115-1:4116") )
-for lumi in lumisToProcess:
-    vlumis.push_back(lumi)
-
-threads = []
-ctr=0
-for name in fileNames:
-#    aFile = "file:///home/mbluj/work/data/NanoAOD/80X_with944/VBFHToTauTau_M125_13TeV_powheg_pythia8/RunIISummer16NanoAOD_PUMoriond17_05Feb2018_94X_mcRun2_asymptotic_v2-v1/"+name
-    aFile = "file://"+name
-
-    print "Using file: ",aFile
-    aROOTFile = TFile.Open(aFile)
-    aTree = aROOTFile.Get("Events")
-    print "TTree entries: ",aTree.GetEntries()
-    if channel=='mt' or channel=='all': HMuTauhTreeFromNano(  aTree,doSvFit,applyRecoil,vlumis).Loop(nevents,sync_event)
-    if channel=='et' or channel=='all': HElTauhTreeFromNano(  aTree,doSvFit,applyRecoil,vlumis).Loop(nevents,sync_event)
-    if channel=='tt' or channel=='all': HTauhTauhTreeFromNano(aTree,doSvFit,applyRecoil,vlumis).Loop(nevents,sync_event)
-
-#    print 'A',name,threading.active_count()
-#    t = threading.Thread(target=runFile, args=(aFile,) )
-#    threads += [t]
-#    print 'B',name,threading.active_count()
-#    while threading.active_count()>nthreads:  #pause until thread slots become available                                                                                
-#        pass
-#    print 'C',name,threading.active_count()
-#    t.start()
+if channel=='tt':
+    assert gSystem.CompileMacro('HTauhTauhTreeFromNano.C','k')
+    from ROOT import HTauhTauhTreeFromNano as Ntuplizer
 
 
 
+vlumis = getLumisToRun(JSONfile)
+
+HTTParticle.corrType = getattr(HTTAnalysis, systShift )
+
+prefix = "-".join([channel, systShift])
+Ntuplizer(  aTree, vlumis, prefix).Loop(nevents,check_event)
 
 
-#    print "Making the MuTau tree"
-#    aROOTFile = TFile.Open(aFile)
-#    aTree = aROOTFile.Get("Events")
-#    print "TTree entries: ",aTree.GetEntries()
-#    HMuTauhTreeFromNano(aTree,doSvFit,applyRecoil,vlumis).Loop(nevents,sync_event)
-##    HMuTauhTreeFromNano(aTree,doSvFit,applyRecoil,vlumis).Loop()
+# for f in glob('*'):
+#     if not f in glob(prefix + '*.root') and not f in glob("log*.txt"):
+#         os.remove(f)
 
-#    print "Making the TauTau tree"
-#    aROOTFile = TFile.Open(aFile)
-#    aTree = aROOTFile.Get("Events")
-#    HTauhTauhTreeFromNano(aTree,doSvFit,applyRecoil,vlumis).Loop(nevents)
-
-    if nevents>0: break
 
 exit(0)

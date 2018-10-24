@@ -3,11 +3,19 @@
 
 #include "TLorentzVector.h"
 #include "TVector3.h"
+#include "TH2F.h"
+#include "TMatrixDEigen.h"
+#include "RooWorkspace.h"
+#include "RooRealVar.h"
+#include "RooFunctor.h"
+#include "TFile.h"
+#include "TRandom3.h"
 #include "TBits.h"
 #include <map>
 #include <vector>
 #include <bitset>
 #include <iostream>
+#include <string.h>
 
 #include "PropertyEnum.h"
 #include "JecUncEnum.h"
@@ -15,13 +23,18 @@
 #include "FilterEnum.h"
 #include "SelectionBitsEnum.h"
 #include "AnalysisEnums.h"
+#include "LeptonCuts.h"
+#include "utils/BTagCalibration/interface/BTagCalibrationStandalone.h"
 ///////////////////////////////////////////////////
 ///////////////////////////////////////////////////
 class HTTEvent{
 
+
  public:
 
-  enum sampleTypeEnum {DUMMY = -1, DATA = 0, DY = 1, DYLowM = 2, WJets=3, TTbar=4, h=5, H=6, A=7};
+  static std::map<string,PropertyEnum> usePropertyFor;
+
+  enum sampleTypeEnum {DUMMY, MuonData, EleData, TauData , DY, DYLowM, WJets, TTbar, ST, Diboson, EWK, h, H, A};
 
   static const int ntauIds = 13;
   static const int againstMuIdOffset = 0;
@@ -30,10 +43,9 @@ class HTTEvent{
   static const TString tauIDStrings[ntauIds];//implementation in cxx
 
   HTTEvent(){clear();}
-
   ~HTTEvent(){}
-
   ///Data member setters.
+
   void setRun(unsigned int x){runId = x;}
 
   void setEvent(unsigned long int x){eventId = x;}
@@ -41,6 +53,8 @@ class HTTEvent{
   void setLS(unsigned long int x){lsId = x;}
 
   void setNPU(float x){nPU = x;}
+
+  void setPUWeight(float x){puWeight = x;}
 
   void setNPV(unsigned int x){nPV = x;}
 
@@ -50,25 +64,33 @@ class HTTEvent{
 
   void setMCWeight(float x){mcWeight = x;}
 
-  void setPtReWeight(float x){ptReWeight = x;}
+  void setXsec(float x){xsec = x;}
 
-  void setPtReWeightR1(float x){ptReWeightR1 = x;}
+  void setGenNEventsWeight(float x){genNEvents = x;}
 
-  void setPtReWeightSUSY(float x){ptReWeightSUSY = x;}
+  void setTopP4(const TLorentzVector &p4, const TLorentzVector &antiP4) {topP4 = p4; antiTopP4 = antiP4; isSetTopP4 = true; }
+
+  void setTopPtReWeight(float x){topPtReWeight = x;}
+
+  void setTopPtReWeightR1(float x){topPtReWeightR1 = x;}
+
+  void setGenBosonP4(const TLorentzVector &p4, const TLorentzVector &visP4) {bosP4 = p4; bosVisP4 = visP4; isSetGenBosonP4 = true; }
+
+  void setZPtReWeight(float x){zPtReWeight = x;}
+
+  void setZPtReWeightSUSY(float x){zPtReWeightSUSY = x;}
 
   void setLHE_Ht(float x){lheHt = x;}
 
   void setLHEnOutPartons(int x){lheNOutPartons = x;}
 
-  void setSampleType(sampleTypeEnum x){sampleType = x;}
+  void setSampleType(string sampletype);
 
   void setDecayModeMinus(int x){decayModeMinus = x;}
 
   void setDecayModePlus(int x){decayModePlus = x;}
 
   void setDecayModeBoson(int x){decayModeBoson = x;}
-
-  void setGenBosonP4(const TLorentzVector &p4, const TLorentzVector &visP4) {bosP4 = p4; bosVisP4 = visP4; }
 
   void setGenPV(const TVector3 & aPV) {genPV = aPV;}
 
@@ -106,19 +128,25 @@ class HTTEvent{
 
   float getNPU() const {return nPU;}
 
+  float getPUWeight() const {return puWeight;}
+
   unsigned int getNPV() const {return nPV;}
+
+
 
   float getRho() const {return rho;}
 
   float getMCatNLOWeight() const {return aMCatNLOweight;}
 
-  float getPtReWeight() const {return ptReWeight;}
+  double getTopPtReWeight(bool run_1=true) const {return run_1 ? topPtReWeightR1 : topPtReWeight;}
 
-  float getPtReWeightR1() const {return ptReWeightR1;}
-
-  float getPtReWeightSUSY() const {return ptReWeightSUSY;}
+  double getZPtReWeight() const { return zPtReWeight;}
 
   float getMCWeight() const {return mcWeight;}
+
+  float getXsec() const {return xsec;}
+
+  float getGenNEventsWeight() const {return genNEvents;}
 
   float getLHE_Ht() const {return lheHt;}
 
@@ -133,6 +161,8 @@ class HTTEvent{
   int getDecayModeBoson() const {return decayModeBoson;}
 
   TLorentzVector getGenBosonP4(bool visP4=false) const { return visP4 ? bosVisP4 : bosP4 ; }
+
+  TLorentzVector getTopP4(bool anti=false) const { return anti ? antiTopP4 : topP4 ; }
 
   TVector2 getMET() const {return met;}
 
@@ -154,17 +184,22 @@ class HTTEvent{
 
   int getFilter(FilterEnum index) const {return (unsigned int)index<filters.size()?  filters[(unsigned int)index]: -999;}
 
- private:
 
+
+ private:
   ///Event run, run and LS number
+
   unsigned int runId;
   unsigned long int eventId, lsId;
 
   //Generator event weight
   float mcWeight;
-
+  float xsec;
+  float genNEvents;
+ 
   ///Weight used to modify the pt shape.
-  float ptReWeight, ptReWeightR1, ptReWeightSUSY;
+  float topPtReWeight, topPtReWeightR1;
+  float zPtReWeight,   zPtReWeightSUSY;
 
   ///Ht value from LHE record.
   float lheHt;
@@ -177,6 +212,8 @@ class HTTEvent{
 
   ///Number of true PU vertices from MC
   float nPU;
+
+  float puWeight;
 
   //Number of reocnstructed PV
   unsigned int nPV;
@@ -191,7 +228,12 @@ class HTTEvent{
   int decayModeBoson;
 
   ///Boson (H, Z, W) p4 and visible p4
+  bool isSetGenBosonP4;
   TLorentzVector bosP4, bosVisP4;
+
+  ///top and antitop p4
+  bool isSetTopP4;
+  TLorentzVector topP4, antiTopP4;
 
   ///Tau decay modes
   int decayModeMinus, decayModePlus;
@@ -228,207 +270,266 @@ class HTTEvent{
 
 };
 
-class HTTParticle{
+class HTTParticle
+{
+
+  
 
   public:
 
-  HTTParticle(){ clear();}
+    static HTTAnalysis::sysEffects corrType;
 
-  ~HTTParticle(){}
+    HTTParticle(){clear();}
 
-  void clear();
+    ~HTTParticle(){}
 
-  ///Data member setters.
-  void setP4(const TLorentzVector &aP4) { p4 = aP4;}
+    void clear();
 
-  void setChargedP4(const TLorentzVector &aP4) { chargedP4 = aP4;}
+    ///Data member setters.
+    void setP4(const TLorentzVector &aP4);
+    void setChargedP4(const TLorentzVector &aP4) { chargedP4 = aP4;}
+    void setNeutralP4(const TLorentzVector &aP4) { neutralP4 = aP4;}
 
-  void setNeutralP4(const TLorentzVector &aP4) { neutralP4 = aP4;}
+    void setPCA(const TVector3 &aV3) {pca = aV3;}
+    void setPCARefitPV(const TVector3 &aV3) {pcaRefitPV = aV3;}
+    void setPCAGenPV(const TVector3 &aV3) {pcaGenPV = aV3;}
 
-  void setPCA(const TVector3 &aV3) {pca = aV3;}
+    void setCutBitmask(int bitmask) {cutBitmask = bitmask; }
+    void setProperties(const std::vector<Double_t> & aProperties) { properties = aProperties;}
 
-  void setPCARefitPV(const TVector3 &aV3) {pcaRefitPV = aV3;}
+    ///Data member getters.
+    const TLorentzVector & getP4(HTTAnalysis::sysEffects defaultType=HTTAnalysis::NOMINAL) const;
+    const TVector2 & getDeltaVector() const { return deltaVector; }
+    const TLorentzVector & getChargedP4() const {return chargedP4;}
+    const TLorentzVector getNeutralP4() const {return neutralP4;}
 
-  void setPCAGenPV(const TVector3 &aV3) {pcaGenPV = aV3;}
+    const TVector3 & getPCA() const {return pca;}
+    const TVector3 & getPCARefitPV() const {return pcaRefitPV;}
+    const TVector3 & getPCAGenPV() const {return pcaGenPV;}
 
-  void setProperties(const std::vector<Double_t> & aProperties) { properties = aProperties;}
+    int getPDGid() const {return getProperty(PropertyEnum::pdgId);}
+    int getCharge() const {return getProperty(PropertyEnum::charge);}
+    float getMT(TVector2 met, HTTAnalysis::sysEffects defaultType=HTTAnalysis::NOMINAL) const { return TMath::Sqrt( 2. * getP4(defaultType).Pt() * met.Mod() * (1. - TMath::Cos( getP4(defaultType).Phi()-met.Phi()))); }
 
-  ///Data member getters.
-  const TLorentzVector & getP4(HTTAnalysis::sysEffects type=HTTAnalysis::NOMINAL) const {return getSystScaleP4(type);}
+    int getCutBitmask() {return cutBitmask;}
+    bool isBaseline()         { return (cutBitmask & 0x1) > 0; }
+    bool isDiLepton()         { return (cutBitmask & 0x2) > 0; }
+    bool isExtraLepton()      { return (cutBitmask & 0x4) > 0; }
+    bool isAdditionalLepton() { return (cutBitmask & 0x8) > 0; }
+    bool isSemiLepTau()       { return (cutBitmask & 0x10) > 0; }
+    bool isFullHadLeadTau()   { return (cutBitmask & 0x20) > 0; }
+    bool isFullHadSubTau()    { return (cutBitmask & 0x40) > 0; }
 
-  const TLorentzVector & getChargedP4() const {return chargedP4;}
+    Double_t getProperty(PropertyEnum index) const {return (unsigned int)index<properties.size()?  properties[(unsigned int)index]: -999;}
 
-  const TLorentzVector getNeutralP4() const {return neutralP4;}
+    bool hasTriggerMatch(TriggerEnum index) const {return (unsigned int)getProperty(PropertyEnum::isGoodTriggerType) & (1<<(unsigned int)index)
+                                                           && (unsigned int)getProperty(PropertyEnum::FilterFired) & (1<<(unsigned int)index);}
 
-  const TVector3 & getPCA() const {return pca;}
+   private:
 
-  const TVector3 & getPCARefitPV() const {return pcaRefitPV;}
+    ///Return four-momentum shifted with scale.
+    ///Shift modifies three-momentum transverse part only, leaving mass constant.
+    const TLorentzVector getShiftedP4(HTTAnalysis::sysEffects shift) const;
 
-  const TVector3 & getPCAGenPV() const {return pcaGenPV;}
+    ///Nominal (as recontructed) four-momentum
+    TLorentzVector p4;
 
-  int getPDGid() const {return getProperty(PropertyEnum::pdgId);}
+    ///Scaled four-momentum;
+    mutable TLorentzVector currentP4;
+    mutable TVector2 deltaVector; // Shift propagated to MET
+    mutable HTTAnalysis::sysEffects lastSystEffect;
 
-  int getCharge() const {return getProperty(PropertyEnum::charge);}
+    ///Charged and neutral components four-momentum
+    TLorentzVector chargedP4, neutralP4;
 
-  Double_t getProperty(PropertyEnum index) const {return (unsigned int)index<properties.size()?  properties[(unsigned int)index]: -999;}
+    ///Vectors from primary vertex to point of closest approach (PCA)
+    ///calculated with respect to AOD vertex, refitted and generated vertex.
+    TVector3 pca, pcaRefitPV, pcaGenPV;
 
-  bool hasTriggerMatch(TriggerEnum index) const {return (unsigned int)getProperty(PropertyEnum::isGoodTriggerType)& (1<<(unsigned int)index) &&
-                                                        (unsigned int)getProperty(PropertyEnum::FilterFired)& (1<<(unsigned int)index);}
+    ///Vector of various particle properties.
+    ///Index generated automatically during conversion from
+    ///LLR ntuple format
+    std::vector<Double_t> properties;
 
- private:
-
-  ///Return four-momentum modified according DATA/MC energy scale factors.
-  const TLorentzVector & getNominalShiftedP4() const;
-
-  ///Return four-momentum modified according to given systematic effect.
-  ///The method recognises particle type, e.g. muons are not affected by
-  ///TES variations etc.
-  const TLorentzVector & getSystScaleP4(HTTAnalysis::sysEffects type=HTTAnalysis::NOMINAL) const;
-
-  ///Return four-momentum shifted with scale.
-  ///Shift modifies three-momentum transverse part only, leaving mass constant.
-  const TLorentzVector & getShiftedP4(float scale, bool preserveMass=true) const;
-
-  ///Nominal (as recontructed) four-momentum
-  TLorentzVector p4;
-
-  ///Scaled four-momentum cache;
-  mutable TLorentzVector p4Cache;
-  mutable HTTAnalysis::sysEffects lastSystEffect;
-
-  ///Charged and neutral components four-momentum
-  TLorentzVector chargedP4, neutralP4;
-
-  ///Vectors from primary vertex to point of closest approach (PCA)
-  ///calculated with respect to AOD vertex, refitted and generated vertex.
-  TVector3 pca, pcaRefitPV, pcaGenPV;
-
-  ///Vector of various particle properties.
-  ///Index generated automatically during conversion from
-  ///LLR ntuple format
-  std::vector<Double_t> properties;
-
-  //Corrections of nominal tau-scale: https://twiki.cern.ch/twiki/bin/view/CMS/TauIDRecommendation13TeV#Tau_energy_scale 
-  /*dummy
-  static constexpr float TES_1p=0.0;
-  static constexpr float TES_1ppi0=0.0;
-  static constexpr float TES_3p=0.0;
-  */
-  /*early 2016 as SM HTT*/
-  static constexpr float TES_1p=-0.018;
-  static constexpr float TES_1ppi0=0.010;
-  static constexpr float TES_3p=0.004;
-  /**/
-  /*final 2016
-  static constexpr float TES_1p=-0.005;
-  static constexpr float TES_1ppi0=0.011;
-  static constexpr float TES_3p=0.006;
-  */
-  static constexpr float TES = 0.012;
-  static constexpr float EES = 0.03;
-  static constexpr float MES = 0.03;
-  
+    int cutBitmask = 0;
+ 
 };
 ///////////////////////////////////////////////////
 ///////////////////////////////////////////////////
-class HTTPair{
+class HTTPair
+{
+  public:
 
- public:
+    HTTPair(){ clear();}
 
-  HTTPair(){ clear();}
+    ~HTTPair(){}
 
-  ~HTTPair(){}
+    void clear();
 
-  void clear();
+    ///Data member setters.
+    void setP4(const TLorentzVector aP4, string uncert) {p4Vector[uncert] = aP4;}
 
-  ///Data member setters.
-  void setP4(const TLorentzVector &aP4, HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) {p4Vector[(unsigned int)type] = aP4;}
+    void setLeg1(const HTTParticle &aParticle, int idx=-1){leg1 = aParticle; indexLeg1=idx;}
+    void setLeg2(const HTTParticle &aParticle, int idx=-1){leg2 = aParticle; indexLeg2=idx;}
 
-  void setLeg1P4(const TLorentzVector &aP4, HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) {leg1p4Vector[(unsigned int)type] = aP4;}
+    void setMET(const TVector2 &aVector, string uncert){ met[uncert] = aVector  - ( leg1.getDeltaVector() + leg2.getDeltaVector() ); };
+    void setCurrentMETShift(string uncert);
+    void setMETMatrix(float m00, float m01, float m10, float m11) {metMatrix.push_back(m00); metMatrix.push_back(m01); metMatrix.push_back(m10); metMatrix.push_back(m11);}
 
-  void setLeg2P4(const TLorentzVector &aP4, HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) {leg2p4Vector[(unsigned int)type] = aP4;}
-  
-  void setMET(const TVector2 &aVector) {met = aVector;}
+    ///Data member getters.
+    enum P4Type{ Vis = 0, Simple = 1, SVFit = 2};
+    const TLorentzVector getP4(P4Type type = P4Type::SVFit);
 
-  void setSVMET(const TVector2 &aVector, HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) {svMetVector[(unsigned int)type] = aVector;}
+    const TVector2 & getMET() const {return metCache;}
 
-  void setMTLeg1(const float & aMT) {mtLeg1 = aMT;}
+    float getMTLeg1(HTTAnalysis::sysEffects defaultType = HTTAnalysis::NOMINAL) const {return leg1.getMT( getMET(), defaultType ); }
+    float getMTLeg2(HTTAnalysis::sysEffects defaultType = HTTAnalysis::NOMINAL) const {return leg2.getMT( getMET(), defaultType ); }
+    float getMTTOT(HTTAnalysis::sysEffects defaultType = HTTAnalysis::NOMINAL) const;
 
-  void setMTLeg2(const float & aMT) {mtLeg2 = aMT;}
+    const HTTParticle & getLeg1() const {return leg1;}
+    const HTTParticle & getLeg2() const {return leg2;}
 
-  void setLeg1(const HTTParticle &aParticle, int idx=-1){leg1 = aParticle; indexLeg1=idx;}
- 
-  void setLeg2(const HTTParticle &aParticle, int idx=-1){leg2 = aParticle; indexLeg2=idx;}
+    float getMVis(HTTAnalysis::sysEffects defaultType = HTTAnalysis::NOMINAL) const {return  ( leg1.getP4(defaultType) + leg2.getP4(defaultType) ).M(); }
+    float getPTVis(HTTAnalysis::sysEffects defaultType = HTTAnalysis::NOMINAL) const {return ( leg1.getP4(defaultType) + leg2.getP4(defaultType) ).Pt(); }
 
-  void setMETMatrix(float m00, float m01, float m10, float m11) {metMatrix.push_back(m00); metMatrix.push_back(m01); metMatrix.push_back(m10); metMatrix.push_back(m11);}
+    int getIndexLeg1() {return indexLeg1;}
+    int getIndexLeg2() {return indexLeg2;}
 
-  ///Data member getters.
-  const TLorentzVector & getP4(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const;
+    HTTAnalysis::finalState getFinalState();
+    bool isInLooseSR();
 
-  const TLorentzVector & getLeg1P4(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const;
+    std::vector<float> getMETMatrix() const {return metMatrix;}
 
-  const TLorentzVector & getLeg2P4(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const;
+  private:
 
-  const TVector2 & getMET(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const {return getSystScaleMET(type);}
+    ///Return MET modified according to given systematic effect.
+    ///The MET is corrected for accorging leptons corrections.
+    ///The recoil correctino is not updated.
+    const TVector2 & getSystScaleMET(HTTAnalysis::sysEffects defaultType=HTTAnalysis::NOMINAL) const;
 
-  const TVector2 & getSVMET(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const {return svMetVector[(unsigned int)type];}
+    ///Return transverse mass caluculated according to the scale shifts.
+    float getSystScaleMT(const HTTParticle &aParticle, HTTAnalysis::sysEffects defaultType=HTTAnalysis::NOMINAL) const;
 
-  float getMTLeg1(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const {return getSystScaleMT(leg1, type);}
+    ///Nominal met as calculated from PF.
+    ///Includes recoil corrections.
+    mutable std::map<string,TVector2> met;
 
-  float getMTLeg2(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const {return getSystScaleMT(leg2, type);}
+    ///Scaled four-momentum cache;
+    mutable TVector2 metCache;
+    mutable string lastMETShift;
+    mutable float mtCache;
 
-  const HTTParticle & getLeg1() const {return leg1;}
+    ///Vectors holding p4 and MET for
+    ///for various scale variances.
+    std::map<string, TLorentzVector> p4Vector;
 
-  const HTTParticle & getLeg2() const {return leg2;}
+    //MVAMET covariance matrix in order 00,01,10,11
+    std::vector<float> metMatrix;
 
-  int getIndexLeg1() {return indexLeg1;}
+    ///Pair legs
+    HTTParticle leg1, leg2;
+    int indexLeg1, indexLeg2;
 
-  int getIndexLeg2() {return indexLeg2;}
+};
 
-  const HTTParticle & getMuon() const {return abs(leg1.getPDGid())==13 ? leg1 : leg2; }
+class HTTJet
+{
+  public:
+    HTTJet(){clear();}
+    ~HTTJet(){}
 
-  const HTTParticle & getTau() const {return abs(leg1.getPDGid())==15 ? leg1 : leg2; }
+    void clear();
 
-  float getMTMuon(HTTAnalysis::sysEffects type = HTTAnalysis::NOMINAL) const {return abs(leg1.getPDGid())==13 ? getMTLeg1(type) : getMTLeg2(type); }
+    void setP4(const TLorentzVector &aP4) { p4 = aP4; currentP4 = aP4; }
+    void SetPtEtaPhiM(float pt, float eta, float phi, float m){ p4.SetPtEtaPhiM(pt,eta,phi,m); currentP4 = getP4(); }
 
-  std::vector<float> getMETMatrix() const {return metMatrix;}
+    void setProperties(const std::vector<Double_t> & aProperties) { properties = aProperties;}
+    void setJecUncertSourceValue(string uncert, double value, bool up){ jecUncertSourceValues[uncert] = value; };
+    void setJecUncertValues( std::map<string, double> aUncertainties ){ jecUncertSourceValues = aUncertainties; }
+    void setUncertShift( string uncert, bool up ){ currentP4 = getP4( uncert, up ); }
 
- private:
+    TLorentzVector & P4(){ return currentP4; }
+    float Pt(){ return currentP4.Pt(); }
+    float Eta(){ return currentP4.Eta(); }
+    float Phi(){ return currentP4.Phi(); }
+    float M(){ return currentP4.M(); } 
 
-  ///Return MET modified according to given systematic effect.
-  ///The MET is corrected for accorging leptons corrections.
-  ///The recoil correctino is not updated.
-  const TVector2 & getSystScaleMET(HTTAnalysis::sysEffects type=HTTAnalysis::NOMINAL) const;
+    Double_t getProperty(PropertyEnum index) const {return (unsigned int)index<properties.size()?  properties[(unsigned int)index]: -999;}
 
-  ///Return transverse mass caluculated according to the scale shifts.
-  float getSystScaleMT(const HTTParticle &aPerticle,
-		       HTTAnalysis::sysEffects type=HTTAnalysis::NOMINAL) const;
+    // Fallback when jec uncerts get asymmetric
+    // double getJecUncertValue(unsigned int index, bool up){ return up ? jecUncertSourceValuesUp[index] : jecUncertSourceValuesDown[index]; };
+    
+    double getJecUncertValue(string uncert, bool up){ return jecUncertSourceValues[uncert]; };
 
-  ///Nominal met as calculated from PF.
-  ///Includes recoil corrections.
-  TVector2 met;
 
-  ///Scaled four-momentum cache;
-  mutable TVector2 metCache;
-  mutable HTTAnalysis::sysEffects lastSystEffect;
-  mutable float mtCache;
+  private:
 
-  ///Vectors holding p4 and MET for
-  ///for various scale variances.
-  std::vector<TLorentzVector> p4Vector;
-  std::vector<TLorentzVector> leg1p4Vector;
-  std::vector<TLorentzVector> leg2p4Vector;
-  std::vector<TVector2> svMetVector;
+    const TLorentzVector & getP4(string uncert = "", bool up = true);
 
-  //MVAMET covariance matrix in order 00,01,10,11
-  std::vector<float> metMatrix;
+    TLorentzVector p4;
+    TLorentzVector currentP4;
 
-  ///MT calculated for (leg1,MET) and (leg2,MET)
-  float mtLeg1, mtLeg2;
+    std::vector<Double_t> properties;
+    std::map<string,double> jecUncertSourceValues;
 
-  ///Pair legs
-  HTTParticle leg1, leg2;
-  int indexLeg1, indexLeg2;
+    // Fallback when jec uncerts get asymmetric
+    // std::vector<double> jecUncertSourceValuesUp;
+    // std::vector<double> jecUncertSourceValuesDown;
+};
+
+class HTTJetCollection
+{
+  public:
+    HTTJetCollection(){clear();};
+    ~HTTJetCollection(){}
+
+    void initCollection(bool isMC, bool applyRecoil, bool isSync);
+    void clear();
+
+    void initForPromoteDemote();
+
+    void addJet(HTTJet newJet){ jetCollection.push_back(newJet); };
+    void setCurrentUncertShift( string uncert, bool up ){ fillCurrentCollections(uncert,up); }
+    void fillCurrentCollections(string uncert = "", bool up = true);
+
+    vector< pair< string, pair<string,bool> > > getNeededJECShifts(){ return jecShifts; }
+    const TVector2 getTotalJetShift(string uncert, bool up);
+    HTTJet & getJet(unsigned int index){ return jetCurrentCollection[index]; }
+
+    void btagPromoteDemote(string mistagsys = "central", string btagsys = "central");
+    HTTJet & getBtagJet(unsigned int index){ return btagCurrentCollection[index]; }
+
+    int getNJets(double pt = 20);
+    int getNBtag(){ return btagCurrentCollection.size(); };
+    int getNJetInGap(double pt = 20);
+
+
+    const TLorentzVector & getDiJetP4(){return dijet;}
+
+  private:
+
+    static bool sortJets(HTTJet j1, HTTJet j2);
+
+    bool usePromoteDemote = false;
+    BTagCalibration calib;
+    BTagCalibrationReader reader;
+    TFile *eff_file;
+    TH2D *hb_eff;
+    TH2D *hc_eff;
+    TH2D *hoth_eff;
+
+    // Names of JES uncertainty shifts.
+    vector< pair< string, pair<string,bool> > > jecShifts;
+
+    std::vector<HTTJet> jetCollection;
+    std::vector<HTTJet> jetCurrentCollection;
+    std::vector<HTTJet> btagCollection;
+    std::vector<HTTJet> btagCurrentCollection;
+    std::vector<HTTJet> antibtagCollection;
+    TLorentzVector dijet;
+    void setDijetP4();
+    void fillCurrentCollection();
+    
 
 };
 
